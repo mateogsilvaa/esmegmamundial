@@ -1,0 +1,156 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --nav-height: 64px;
+    --bottom-nav-height: 64px;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-zinc-50 text-zinc-900;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+
+  /* Tabular numbers for scores and standings */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { @apply bg-zinc-300 rounded-full; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-zinc-400; }
+}
+
+@layer components {
+  /* Cards */
+  .card {
+    @apply bg-white border border-zinc-200 rounded-xl;
+  }
+  .card-hover {
+    @apply card transition-shadow hover:shadow-md hover:border-zinc-300;
+  }
+
+  /* Buttons */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2
+           px-4 py-2.5 rounded-lg text-sm font-semibold
+           bg-zinc-900 text-white
+           hover:bg-zinc-800 active:bg-zinc-950
+           disabled:opacity-40 disabled:cursor-not-allowed
+           transition-colors;
+  }
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2
+           px-4 py-2.5 rounded-lg text-sm font-semibold
+           bg-white text-zinc-900 border border-zinc-200
+           hover:bg-zinc-50 hover:border-zinc-300 active:bg-zinc-100
+           disabled:opacity-40 disabled:cursor-not-allowed
+           transition-colors;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2
+           px-3 py-2 rounded-lg text-sm font-medium
+           text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100
+           disabled:opacity-40 disabled:cursor-not-allowed
+           transition-colors;
+  }
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-2
+           px-4 py-2.5 rounded-lg text-sm font-semibold
+           bg-red-600 text-white
+           hover:bg-red-700 active:bg-red-800
+           disabled:opacity-40 disabled:cursor-not-allowed
+           transition-colors;
+  }
+
+  /* Form inputs */
+  .input {
+    @apply w-full px-3 py-2.5 text-sm
+           bg-white border border-zinc-200 rounded-lg
+           text-zinc-900 placeholder-zinc-400
+           focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-transparent
+           disabled:opacity-50 disabled:bg-zinc-50
+           transition-colors;
+  }
+
+  /* Score display */
+  .score {
+    @apply tabular text-2xl font-bold text-zinc-900;
+  }
+
+  /* Live badge */
+  .badge-live {
+    @apply inline-flex items-center gap-1 px-2 py-0.5
+           text-xs font-semibold uppercase tracking-wide
+           bg-red-600 text-white rounded-full;
+  }
+
+  /* Status badges */
+  .badge-locked {
+    @apply inline-flex items-center gap-1 px-2.5 py-1
+           text-xs font-medium
+           bg-amber-50 text-amber-700 border border-amber-200 rounded-full;
+  }
+  .badge-saved {
+    @apply inline-flex items-center gap-1 px-2.5 py-1
+           text-xs font-medium
+           bg-green-50 text-green-700 border border-green-200 rounded-full;
+  }
+
+  /* Skeleton */
+  .skeleton {
+    @apply bg-zinc-200 rounded animate-pulse;
+  }
+
+  /* Page container */
+  .page {
+    @apply max-w-5xl mx-auto px-4 sm:px-6 py-6;
+  }
+  .page-wide {
+    @apply max-w-7xl mx-auto px-4 sm:px-6 py-6;
+  }
+
+  /* Section heading */
+  .section-title {
+    @apply text-xs font-semibold uppercase tracking-widest text-zinc-400 mb-3;
+  }
+}
+
+@layer utilities {
+  /* Hide scrollbar but keep scroll */
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+  /* Safe area for mobile bottom nav */
+  .pb-safe {
+    padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom));
+  }
+  .mb-nav {
+    margin-bottom: var(--bottom-nav-height);
+  }
+}
+
+/* Live pulse */
+@keyframes livePulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+.live-dot {
+  @apply w-2 h-2 rounded-full bg-red-500;
+  animation: livePulse 1.2s ease-in-out infinite;
+}
