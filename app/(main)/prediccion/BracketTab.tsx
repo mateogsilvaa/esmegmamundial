@@ -223,7 +223,7 @@ export function BracketTab({ qualifiedSlots, thirdGroups, bracketPreds, onPick, 
         <div className="card px-4 py-3 mb-6 border-amber-200 bg-amber-50 flex items-start gap-2">
           <AlertCircle size={15} className="text-amber-600 flex-shrink-0 mt-0.5" />
           <p className="text-sm text-amber-800">
-            Completa los marcadores de todos los grupos primero. El bracket se autocompleta con los clasificados calculados automáticamente.
+            Completa el orden de todos los grupos y selecciona los 8 mejores terceros para poder rellenar el bracket.
           </p>
         </div>
       )}

@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
-import { getTeamById } from '@/lib/data/teams';
-import { getMatchById } from '@/lib/data/matches';
-import { scoreGroupMatch } from '@/lib/scoring';
-import { SCORE_RULES } from '@/lib/types';
+import { scoreBonusPrediction, sumTotalScore } from '@/lib/scoring';
 
 /**
- * Admin endpoint: recalculate points for all users after a match finishes.
+ * Admin endpoint: recalculate bonus points after a match finishes.
  * POST /api/scores/recalculate  { matchId: 'A1' }
+ *
+ * Header: Authorization: Bearer <SUPABASE_SERVICE_ROLE_KEY>
+ *
+ * Flow:
+ *  1. Score match_bonus_predictions for the given match
+ *  2. Recalculate leaderboard totals for affected users
+ *  3. Update ranks
  */
 export async function POST(req: NextRequest) {
   const auth = req.headers.get('authorization');
@@ -23,7 +27,7 @@ export async function POST(req: NextRequest) {
   // Get official match result
   const { data: officialMatch } = await supabase
     .from('matches')
-    .select('*')
+    .select('home_score, away_score, status')
     .eq('id', matchId)
     .single();
 
@@ -31,61 +35,78 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Match not finished' }, { status: 400 });
   }
 
-  const staticMatch = getMatchById(matchId);
-  if (!staticMatch) return NextResponse.json({ error: 'Match not found in static data' }, { status: 404 });
+  // ── Score bonus predictions ──────────────────────────────────────────────
 
-  const match = {
-    ...staticMatch,
-    homeScore: officialMatch.home_score,
-    awayScore: officialMatch.away_score,
-    status: 'finished' as const,
-  };
-
-  // Get all predictions for this match
-  const { data: predictions } = await supabase
-    .from('predictions')
+  const { data: bonusPreds } = await supabase
+    .from('match_bonus_predictions')
     .select('id, user_id, home_score, away_score')
     .eq('match_id', matchId);
 
-  if (!predictions?.length) return NextResponse.json({ success: true, updated: 0 });
+  const bonusUpdates: { id: string; user_id: string; pts: number }[] = [];
 
-  // Score each prediction
-  const updates = predictions.map(pred => {
-    const { pts } = scoreGroupMatch(match, {
+  for (const pred of bonusPreds ?? []) {
+    const { pts } = scoreBonusPrediction(
       matchId,
-      homeScore: pred.home_score,
-      awayScore: pred.away_score,
-    });
+      pred.home_score,
+      pred.away_score,
+      officialMatch.home_score,
+      officialMatch.away_score,
+    );
+    bonusUpdates.push({ id: pred.id, user_id: pred.user_id, pts });
+  }
 
-    return { id: pred.id, user_id: pred.user_id, pts };
-  });
-
-  // Update prediction points
-  for (const u of updates) {
+  // Update individual bonus prediction points
+  for (const u of bonusUpdates) {
     await supabase
-      .from('predictions')
-      .update({ points_earned: u.pts })
+      .from('match_bonus_predictions')
+      .update({ points_earned: u.pts, locked: true })
       .eq('id', u.id);
   }
 
-  // Recalculate leaderboard totals for affected users
-  const userIds = Array.from(new Set(updates.map(u => u.user_id)));
+  // ── Recalculate leaderboard for affected users ────────────────────────────
+
+  const userIds = Array.from(new Set(bonusUpdates.map(u => u.user_id)));
+
   for (const userId of userIds) {
-    const { data: allPreds } = await supabase
-      .from('predictions')
+    const { data: allBonus } = await supabase
+      .from('match_bonus_predictions')
       .select('points_earned')
       .eq('user_id', userId);
 
-    const total = allPreds?.reduce((sum, p) => sum + (p.points_earned ?? 0), 0) ?? 0;
+    const bonusScore = allBonus?.reduce((s, p) => s + (p.points_earned ?? 0), 0) ?? 0;
+
+    // Get current leaderboard values to preserve other categories
+    const { data: current } = await supabase
+      .from('leaderboard')
+      .select('group_qualifier, group_position, thirds_selected, thirds_order, knockout_pts')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    const total = sumTotalScore({
+      groupResults:    [],
+      thirdsResult:    null,
+      knockoutResults: [],
+      bonusResults:    [],
+    }).total
+      + (current?.group_qualifier  ?? 0)
+      + (current?.group_position   ?? 0)
+      + (current?.thirds_selected  ?? 0)
+      + (current?.thirds_order     ?? 0)
+      + (current?.knockout_pts     ?? 0)
+      + bonusScore;
 
     await supabase
       .from('leaderboard')
-      .upsert({ user_id: userId, total_points: total, last_updated: new Date().toISOString() }, {
-        onConflict: 'user_id',
-      });
+      .upsert({
+        user_id:      userId,
+        bonus_score:  bonusScore,
+        total_points: total,
+        last_updated: new Date().toISOString(),
+      }, { onConflict: 'user_id' });
   }
 
-  // Recalculate ranks
+  // ── Recalculate ranks ─────────────────────────────────────────────────────
+
   const { data: allLeaders } = await supabase
     .from('leaderboard')
     .select('user_id, total_points, rank')
@@ -100,5 +121,5 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ success: true, updated: updates.length });
+  return NextResponse.json({ success: true, bonusUpdated: bonusUpdates.length });
 }

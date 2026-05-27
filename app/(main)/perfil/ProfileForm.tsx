@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { Loader2, LogOut, Trash2 } from 'lucide-react';
+import { Loader2, LogOut, Trash2, Camera } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { TEAMS } from '@/lib/data/teams';
 import { Flag } from '@/components/ui/Flag';
@@ -12,26 +12,86 @@ import { cn } from '@/lib/utils';
 interface ProfileFormProps {
   userId: string;
   initialProfile: {
-    username: string;
-    displayName: string;
-    country: string;
-    favoriteTeam: string;
-    isPublic: boolean;
+    username:            string;
+    displayName:         string;
+    country:             string;
+    favoriteTeamId:      string;
+    isPublic:            boolean;
+    isPredictionsPublic: boolean;
+    avatarUrl:           string | null;
   };
 }
 
 export function ProfileForm({ userId, initialProfile }: ProfileFormProps) {
-  const router = useRouter();
-  const [form, setForm] = useState(initialProfile);
-  const [saving, setSaving] = useState(false);
-  const [loggingOut, setLoggingOut] = useState(false);
-  const [resetting, setResetting] = useState(false);
+  const router    = useRouter();
+  const fileRef   = useRef<HTMLInputElement>(null);
+
+  const [form,         setForm]         = useState(initialProfile);
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(initialProfile.avatarUrl);
+  const [saving,       setSaving]       = useState(false);
+  const [uploading,    setUploading]    = useState(false);
+  const [loggingOut,   setLoggingOut]   = useState(false);
+  const [resetting,    setResetting]    = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
 
-  const set = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    const value = e.target.type === 'checkbox' ? (e.target as HTMLInputElement).checked : e.target.value;
+  const set = (key: keyof typeof form) => (
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>,
+  ) => {
+    const value = e.target.type === 'checkbox'
+      ? (e.target as HTMLInputElement).checked
+      : e.target.value;
     setForm(f => ({ ...f, [key]: value }));
   };
+
+  // ── Avatar upload ──────────────────────────────────────────────────────────
+
+  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error('La imagen debe ser menor de 2 MB');
+      return;
+    }
+
+    // Local preview
+    const reader = new FileReader();
+    reader.onload = ev => setAvatarPreview(ev.target?.result as string);
+    reader.readAsDataURL(file);
+
+    setUploading(true);
+    const supabase = createClient();
+    const ext  = file.name.split('.').pop();
+    const path = `${userId}/avatar.${ext}`;
+
+    const { error: upErr } = await supabase.storage
+      .from('avatars')
+      .upload(path, file, { upsert: true });
+
+    if (upErr) {
+      toast.error('Error al subir imagen: ' + upErr.message);
+      setUploading(false);
+      return;
+    }
+
+    const { data } = supabase.storage.from('avatars').getPublicUrl(path);
+    const publicUrl = data.publicUrl + `?t=${Date.now()}`; // cache-bust
+
+    const { error: updateErr } = await supabase
+      .from('profiles')
+      .update({ avatar_url: publicUrl })
+      .eq('id', userId);
+
+    setUploading(false);
+    if (updateErr) {
+      toast.error('Error al guardar avatar');
+    } else {
+      setForm(f => ({ ...f, avatarUrl: publicUrl }));
+      toast.success('Foto actualizada');
+      router.refresh();
+    }
+  };
+
+  // ── Save profile ──────────────────────────────────────────────────────────
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -41,11 +101,12 @@ export function ProfileForm({ userId, initialProfile }: ProfileFormProps) {
     const { error } = await supabase
       .from('profiles')
       .update({
-        username: form.username,
-        display_name: form.displayName || form.username,
-        country: form.country || null,
-        favorite_team: form.favoriteTeam || null,
-        is_public: form.isPublic,
+        username:              form.username,
+        display_name:          form.displayName || form.username,
+        country:               form.country || null,
+        favorite_team_id:      form.favoriteTeamId || null,
+        is_public:             form.isPublic,
+        is_predictions_public: form.isPredictionsPublic,
       })
       .eq('id', userId);
 
@@ -58,6 +119,8 @@ export function ProfileForm({ userId, initialProfile }: ProfileFormProps) {
     }
   };
 
+  // ── Logout ────────────────────────────────────────────────────────────────
+
   const handleLogout = async () => {
     setLoggingOut(true);
     const supabase = createClient();
@@ -65,6 +128,8 @@ export function ProfileForm({ userId, initialProfile }: ProfileFormProps) {
     router.push('/');
     router.refresh();
   };
+
+  // ── Reset predictions ─────────────────────────────────────────────────────
 
   const handleReset = async () => {
     if (!confirmReset) { setConfirmReset(true); return; }
@@ -80,8 +145,53 @@ export function ProfileForm({ userId, initialProfile }: ProfileFormProps) {
     }
   };
 
+  // ── Render ────────────────────────────────────────────────────────────────
+
   return (
     <div className="space-y-6">
+      {/* Avatar */}
+      <div className="card p-5 flex items-center gap-4">
+        <div className="relative flex-shrink-0">
+          <div className="w-16 h-16 rounded-full bg-zinc-100 overflow-hidden flex items-center justify-center border border-zinc-200">
+            {avatarPreview ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={avatarPreview} alt="Avatar" className="w-full h-full object-cover" />
+            ) : (
+              <span className="text-2xl font-bold text-zinc-300">
+                {(form.username || '?')[0].toUpperCase()}
+              </span>
+            )}
+          </div>
+          {uploading && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/40 rounded-full">
+              <Loader2 size={16} className="text-white animate-spin" />
+            </div>
+          )}
+        </div>
+
+        <div>
+          <p className="text-sm font-medium text-zinc-900">Foto de perfil</p>
+          <p className="text-xs text-zinc-500 mb-2">JPG o PNG, máx. 2 MB</p>
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            disabled={uploading}
+            className="btn-secondary text-xs py-1.5 gap-1.5"
+          >
+            <Camera size={13} />
+            Cambiar foto
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            className="hidden"
+            onChange={handleAvatarChange}
+          />
+        </div>
+      </div>
+
+      {/* Main form */}
       <form onSubmit={handleSave} className="card p-5 space-y-4">
         <div className="space-y-1.5">
           <label className="text-sm font-medium text-zinc-700">Nombre de usuario</label>
@@ -123,8 +233,8 @@ export function ProfileForm({ userId, initialProfile }: ProfileFormProps) {
         <div className="space-y-1.5">
           <label className="text-sm font-medium text-zinc-700">Equipo favorito</label>
           <select
-            value={form.favoriteTeam}
-            onChange={set('favoriteTeam')}
+            value={form.favoriteTeamId}
+            onChange={set('favoriteTeamId')}
             className="input"
           >
             <option value="">– Ninguno –</option>
@@ -134,24 +244,35 @@ export function ProfileForm({ userId, initialProfile }: ProfileFormProps) {
           </select>
         </div>
 
-        <label className="flex items-center gap-3 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={form.isPublic}
-            onChange={set('isPublic')}
-            className="w-4 h-4 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-900"
-          />
-          <div>
-            <p className="text-sm font-medium text-zinc-700">Perfil público</p>
-            <p className="text-xs text-zinc-500">Otros pueden ver tus predicciones</p>
-          </div>
-        </label>
+        <div className="space-y-2 pt-1">
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.isPublic}
+              onChange={set('isPublic')}
+              className="w-4 h-4 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-900"
+            />
+            <div>
+              <p className="text-sm font-medium text-zinc-700">Perfil público</p>
+              <p className="text-xs text-zinc-500">Tu perfil es visible desde el ranking</p>
+            </div>
+          </label>
 
-        <button
-          type="submit"
-          disabled={saving}
-          className="btn-primary w-full"
-        >
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.isPredictionsPublic}
+              onChange={set('isPredictionsPublic')}
+              className="w-4 h-4 rounded border-zinc-300 text-zinc-900 focus:ring-zinc-900"
+            />
+            <div>
+              <p className="text-sm font-medium text-zinc-700">Predicciones públicas</p>
+              <p className="text-xs text-zinc-500">Otros pueden ver tus predicciones detalladas</p>
+            </div>
+          </label>
+        </div>
+
+        <button type="submit" disabled={saving} className="btn-primary w-full">
           {saving && <Loader2 size={15} className="animate-spin" />}
           {saving ? 'Guardando…' : 'Guardar cambios'}
         </button>

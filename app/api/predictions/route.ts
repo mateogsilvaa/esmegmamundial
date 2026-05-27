@@ -7,12 +7,17 @@ export async function GET(_req: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const [{ data: matchPreds }, { data: bracketPreds }] = await Promise.all([
-    supabase.from('predictions').select('*').eq('user_id', user.id),
+  const [
+    { data: groupOrderRows },
+    { data: thirdsRow },
+    { data: bracketRows },
+  ] = await Promise.all([
+    supabase.from('group_order_predictions').select('*').eq('user_id', user.id),
+    supabase.from('third_place_predictions').select('*').eq('user_id', user.id).maybeSingle(),
     supabase.from('bracket_predictions').select('*').eq('user_id', user.id),
   ]);
 
-  return NextResponse.json({ matchPreds, bracketPreds });
+  return NextResponse.json({ groupOrderRows, thirdsRow, bracketRows });
 }
 
 export async function POST(req: NextRequest) {
@@ -25,35 +30,54 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const body = await req.json();
-  const { matchPredictions, bracketPredictions } = body;
+  const {
+    groupOrders,     // Array<{ groupId: string; teamOrder: string[] }>
+    thirdsRanking,   // string[] — exactly 8 teamIds (or partial)
+    bracketPreds,    // Record<slot, teamId | null>
+  } = body;
 
-  // Upsert match predictions
-  if (matchPredictions && Array.isArray(matchPredictions)) {
-    const rows = matchPredictions.map((p: {
-      match_id: string; home_score: number; away_score: number;
-    }) => ({
-      user_id: user.id,
-      match_id: p.match_id,
-      home_score: Math.max(0, Math.min(20, Math.round(p.home_score))),
-      away_score: Math.max(0, Math.min(20, Math.round(p.away_score))),
-    }));
+  // ── Group order predictions ──────────────────────────────────────────────
+  if (groupOrders && Array.isArray(groupOrders)) {
+    const rows = groupOrders
+      .filter((g: { groupId: string; teamOrder: string[] }) =>
+        g.groupId && Array.isArray(g.teamOrder) && g.teamOrder.length > 0,
+      )
+      .map((g: { groupId: string; teamOrder: string[] }) => ({
+        user_id:    user.id,
+        group_id:   g.groupId,
+        team_order: g.teamOrder.slice(0, 4), // max 4 teams
+      }));
 
     if (rows.length > 0) {
       const { error } = await supabase
-        .from('predictions')
-        .upsert(rows, { onConflict: 'user_id,match_id' });
+        .from('group_order_predictions')
+        .upsert(rows, { onConflict: 'user_id,group_id' });
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     }
   }
 
-  // Upsert bracket predictions
-  if (bracketPredictions && typeof bracketPredictions === 'object') {
-    const rows = Object.entries(bracketPredictions)
-      .filter(([, teamId]) => teamId !== undefined)
+  // ── Thirds ranking ───────────────────────────────────────────────────────
+  if (thirdsRanking !== undefined) {
+    const ranking = Array.isArray(thirdsRanking)
+      ? thirdsRanking.filter(Boolean).slice(0, 8)
+      : [];
+
+    if (ranking.length > 0) {
+      const { error } = await supabase
+        .from('third_place_predictions')
+        .upsert({ user_id: user.id, ranking }, { onConflict: 'user_id' });
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+  }
+
+  // ── Bracket predictions ──────────────────────────────────────────────────
+  if (bracketPreds && typeof bracketPreds === 'object') {
+    const rows = Object.entries(bracketPreds)
+      .filter(([slot]) => slot.startsWith('P'))
       .map(([slot, teamId]) => ({
         user_id: user.id,
         slot,
-        team_id: teamId as string | null,
+        team_id: (teamId as string | null) ?? null,
       }));
 
     if (rows.length > 0) {

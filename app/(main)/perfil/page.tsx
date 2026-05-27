@@ -17,7 +17,7 @@ export default async function PerfilPage() {
     .from('leaderboard')
     .select('total_points, rank')
     .eq('user_id', user.id)
-    .single();
+    .maybeSingle();
 
   return (
     <div className="page max-w-lg mx-auto">
@@ -27,11 +27,11 @@ export default async function PerfilPage() {
         <div className="card p-4 mb-6 flex items-center justify-between">
           <div>
             <p className="text-xs text-zinc-500 mb-0.5">Posición actual</p>
-            <p className="text-2xl font-bold text-zinc-900 tabular">#{leaderEntry.rank}</p>
+            <p className="text-2xl font-bold text-zinc-900 tabular">#{leaderEntry.rank ?? '–'}</p>
           </div>
           <div className="text-right">
             <p className="text-xs text-zinc-500 mb-0.5">Puntos</p>
-            <p className="text-2xl font-bold text-zinc-900 tabular">{leaderEntry.total_points}</p>
+            <p className="text-2xl font-bold text-zinc-900 tabular">{leaderEntry.total_points ?? 0}</p>
           </div>
         </div>
       )}
@@ -39,11 +39,13 @@ export default async function PerfilPage() {
       <ProfileForm
         userId={user.id}
         initialProfile={{
-          username: profile?.username ?? '',
-          displayName: profile?.display_name ?? '',
-          country: profile?.country ?? '',
-          favoriteTeam: profile?.favorite_team ?? '',
-          isPublic: profile?.is_public ?? true,
+          username:            profile?.username            ?? '',
+          displayName:         profile?.display_name        ?? '',
+          country:             profile?.country             ?? '',
+          favoriteTeamId:      profile?.favorite_team_id    ?? '',
+          isPublic:            profile?.is_public           ?? true,
+          isPredictionsPublic: profile?.is_predictions_public ?? true,
+          avatarUrl:           profile?.avatar_url          ?? null,
         }}
       />
     </div>
