@@ -86,7 +86,8 @@ create policy "Users delete own group order preds before lock"
     and now() < '2026-06-11 19:00:00+00'::timestamptz
   );
 
-create trigger if not exists set_group_order_preds_updated_at
+drop trigger if exists set_group_order_preds_updated_at on public.group_order_predictions;
+create trigger set_group_order_preds_updated_at
   before update on public.group_order_predictions
   for each row execute procedure public.handle_updated_at();
 
@@ -131,7 +132,8 @@ create policy "Users delete own thirds preds before lock"
     and now() < '2026-06-11 19:00:00+00'::timestamptz
   );
 
-create trigger if not exists set_third_preds_updated_at
+drop trigger if exists set_third_preds_updated_at on public.third_place_predictions;
+create trigger set_third_preds_updated_at
   before update on public.third_place_predictions
   for each row execute procedure public.handle_updated_at();
 
@@ -187,7 +189,8 @@ create policy "Users delete own bonus preds"
     and locked = false
   );
 
-create trigger if not exists set_bonus_preds_updated_at
+drop trigger if exists set_bonus_preds_updated_at on public.match_bonus_predictions;
+create trigger set_bonus_preds_updated_at
   before update on public.match_bonus_predictions
   for each row execute procedure public.handle_updated_at();
 
