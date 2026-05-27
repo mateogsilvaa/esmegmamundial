@@ -242,11 +242,11 @@ export function computeQualifiedSlotsWithGroups(
 }
 
 /**
- * Resolve a T_XYZ slot (e.g. T_ABCDF) to the actual teamId.
- * Looks up which T1-T8 thirds come from the allowed groups.
+ * Resolve a single T_XYZ slot — legacy helper for bracketIntegrity.
+ * NOTE: Does NOT track used thirds — use resolveAllThirdSlots() for the bracket UI.
  */
 export function resolveThirdSlot(
-  allowedGroups: string[],   // e.g. ['A','B','C','D','F']
+  allowedGroups: string[],
   slots: Record<string, string | null>,
   thirdGroups: Record<string, string>,
 ): string | null {
@@ -258,6 +258,57 @@ export function resolveThirdSlot(
     }
   }
   return null;
+}
+
+// ─── Stateful third-slot resolution ──────────────────────────────────────────
+//
+// Each T_XYZ bracket slot must be filled by exactly ONE third.
+// Iterating T1-T8 in rank order, we assign each Ti to the first T_XYZ slot
+// whose allowed groups contain Ti's source group.
+// This ensures no third is duplicated across bracket slots.
+
+const THIRD_SLOT_DEFS: Array<{ key: string; groups: string[] }> = [
+  { key: 'T_ABCDF', groups: ['A','B','C','D','F'] },
+  { key: 'T_CDFGH', groups: ['C','D','F','G','H'] },
+  { key: 'T_CEFHI', groups: ['C','E','F','H','I'] },
+  { key: 'T_EHIJK', groups: ['E','H','I','J','K'] },
+  { key: 'T_BEFIJ', groups: ['B','E','F','I','J'] },
+  { key: 'T_AEHIJ', groups: ['A','E','H','I','J'] },
+  { key: 'T_EFGIJ', groups: ['E','F','G','I','J'] },
+  { key: 'T_DEIJL', groups: ['D','E','I','J','L'] },
+];
+
+/**
+ * Resolves all 8 T_XYZ bracket slots in one pass, ensuring each third (Ti)
+ * is used at most once. Returns a map { 'T_ABCDF': teamId, ... }.
+ *
+ * Algorithm: for each T_XYZ slot (in bracket order), find the highest-ranked
+ * Ti (lowest i) whose source group is in the allowed list and hasn't been used.
+ */
+export function resolveAllThirdSlots(
+  slots: Record<string, string | null>,
+  thirdGroups: Record<string, string>,
+): Record<string, string | null> {
+  const result: Record<string, string | null> = {};
+  const usedTKeys = new Set<string>();
+
+  for (const { key, groups } of THIRD_SLOT_DEFS) {
+    let found = false;
+    for (let i = 1; i <= 8; i++) {
+      const tKey = `T${i}`;
+      if (usedTKeys.has(tKey)) continue;
+      const sourceGroup = thirdGroups[tKey];
+      if (sourceGroup && groups.includes(sourceGroup)) {
+        result[key] = slots[tKey] ?? null;
+        usedTKeys.add(tKey);
+        found = true;
+        break;
+      }
+    }
+    if (!found) result[key] = null;
+  }
+
+  return result;
 }
 
 // ─── Real standings from official match results ────────────────────────────

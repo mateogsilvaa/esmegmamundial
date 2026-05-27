@@ -1,9 +1,10 @@
 import { notFound } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
-import { getTeamsByGroup, GROUP_IDS, getTeamById } from '@/lib/data/teams';
+import { getTeamsByGroup, GROUP_IDS } from '@/lib/data/teams';
 import { getMatchesByGroup } from '@/lib/data/matches';
 import { calculateGroupStandings, formatMatchDate, cn } from '@/lib/utils';
 import { Flag } from '@/components/ui/Flag';
+import { BonusPrediction } from './BonusPrediction';
 
 export const revalidate = 30;
 
@@ -21,7 +22,7 @@ export default async function GroupDetailPage({ params }: Props) {
   const teams = getTeamsByGroup(gId);
   const staticMatches = getMatchesByGroup(gId);
 
-  // Official results from DB
+  // ── Official results from DB ──────────────────────────────────────────────
   const { data: dbMatches } = await supabase
     .from('matches')
     .select('id, home_score, away_score, status')
@@ -32,18 +33,26 @@ export default async function GroupDetailPage({ params }: Props) {
     resultMap[m.id] = { homeScore: m.home_score, awayScore: m.away_score, status: m.status };
   }
 
-  // User's score predictions for this group
-  const { data: userPreds } = user ? await supabase
-    .from('predictions')
-    .select('match_id, home_score, away_score')
-    .eq('user_id', user.id)
-    .in('match_id', staticMatches.map(m => m.id)) : { data: [] };
+  // ── User's bonus score predictions ────────────────────────────────────────
+  const bonusMap: Record<string, { homeScore: number; awayScore: number; pointsEarned: number; locked: boolean }> = {};
+  if (user) {
+    const { data: bonusPreds } = await supabase
+      .from('match_bonus_predictions')
+      .select('match_id, home_score, away_score, points_earned, locked')
+      .eq('user_id', user.id)
+      .in('match_id', staticMatches.map(m => m.id));
 
-  const predMap: Record<string, { homeScore: number; awayScore: number }> = {};
-  for (const p of userPreds ?? []) {
-    predMap[p.match_id] = { homeScore: p.home_score, awayScore: p.away_score };
+    for (const p of bonusPreds ?? []) {
+      bonusMap[p.match_id] = {
+        homeScore:    p.home_score,
+        awayScore:    p.away_score,
+        pointsEarned: p.points_earned,
+        locked:       p.locked,
+      };
+    }
   }
 
+  // ── Merge static + DB data ────────────────────────────────────────────────
   const mergedMatches = staticMatches.map(m => ({
     ...m,
     homeScore: resultMap[m.id]?.homeScore ?? null,
@@ -69,7 +78,7 @@ export default async function GroupDetailPage({ params }: Props) {
         </div>
       </div>
 
-      {/* Standings table */}
+      {/* ── Standings table ── */}
       <div className="card mb-6 overflow-hidden">
         <div className="px-4 py-3 border-b border-zinc-100">
           <p className="text-xs font-semibold uppercase tracking-widest text-zinc-400">Clasificación</p>
@@ -124,19 +133,20 @@ export default async function GroupDetailPage({ params }: Props) {
         </div>
       </div>
 
-      {/* Matches by matchday */}
+      {/* ── Matches by matchday ── */}
       {[1, 2, 3].map(md => {
         const matches = byMatchday[md] ?? [];
+        if (matches.length === 0) return null;
         return (
           <div key={md} className="mb-6">
             <p className="section-title">Jornada {md}</p>
             <div className="space-y-3">
               {matches.map(match => {
-                const home = match.homeTeam;
-                const away = match.awayTeam;
-                const finished = match.status === 'finished';
-                const live = match.status === 'live';
-                const myPred = predMap[match.id];
+                const home      = match.homeTeam;
+                const away      = match.awayTeam;
+                const finished  = match.status === 'finished';
+                const live      = match.status === 'live';
+                const bonusPred = bonusMap[match.id] ?? null;
 
                 return (
                   <div key={match.id} className={cn('card p-4', live && 'border-red-200 bg-red-50/30')}>
@@ -154,7 +164,7 @@ export default async function GroupDetailPage({ params }: Props) {
                       )}
                     </div>
 
-                    {/* Match */}
+                    {/* Match row */}
                     <div className="flex items-center gap-4">
                       {/* Home team */}
                       <div className="flex-1 flex items-center gap-2 justify-end">
@@ -188,18 +198,20 @@ export default async function GroupDetailPage({ params }: Props) {
                       </div>
                     </div>
 
-                    {/* User prediction */}
-                    {myPred && (
-                      <div className="mt-3 pt-3 border-t border-zinc-100 flex items-center justify-center gap-2">
-                        <span className="text-xs text-zinc-400">Tu predicción:</span>
-                        <span className="tabular text-xs font-bold text-zinc-700">
-                          {myPred.homeScore} – {myPred.awayScore}
-                        </span>
-                      </div>
-                    )}
-
                     {/* Venue */}
                     <p className="text-xs text-zinc-400 text-center mt-2">{match.venue}</p>
+
+                    {/* Bonus prediction (only for logged-in users) */}
+                    {user && (
+                      <BonusPrediction
+                        matchId={match.id}
+                        initialHome={bonusPred?.homeScore ?? null}
+                        initialAway={bonusPred?.awayScore ?? null}
+                        dbLocked={bonusPred?.locked ?? false}
+                        pointsEarned={bonusPred?.pointsEarned ?? null}
+                        matchStatus={match.status}
+                      />
+                    )}
                   </div>
                 );
               })}
@@ -207,6 +219,16 @@ export default async function GroupDetailPage({ params }: Props) {
           </div>
         );
       })}
+
+      {/* Prompt login if not authenticated */}
+      {!user && (
+        <div className="card px-4 py-4 text-center border-zinc-200 bg-zinc-50 mt-2">
+          <p className="text-sm text-zinc-600">
+            <a href="/auth/login" className="font-semibold text-zinc-900 hover:underline">Inicia sesión</a>
+            {' '}para hacer predicciones de score exacto y ganar puntos bonus.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

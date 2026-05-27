@@ -8,19 +8,18 @@
  */
 
 import { ALL_BRACKET_MATCHES } from './data/bracket';
-import { resolveThirdSlot } from './utils';
+import { resolveAllThirdSlots } from './utils';
 
 // ─── Resolve valid teams for a bracket match ─────────────────────────────────
 
 function resolveSlotTeam(
   slot: string,
   qualifiedSlots: Record<string, string | null>,
-  thirdGroups: Record<string, string>,
+  resolvedThirds: Record<string, string | null>,
   bracketWinners: Record<string, string | null>,
 ): string | null {
   if (slot.startsWith('T_')) {
-    const groups = slot.slice(2).split('');
-    return resolveThirdSlot(groups, qualifiedSlots, thirdGroups);
+    return resolvedThirds[slot] ?? null;
   }
   if (slot.startsWith('P')) {
     return bracketWinners[slot] ?? null;
@@ -38,8 +37,9 @@ export function getValidTeamsForMatch(
   const match = ALL_BRACKET_MATCHES.find(m => m.id === matchId);
   if (!match) return [null, null];
 
-  const homeId = resolveSlotTeam(match.homeSlot, qualifiedSlots, thirdGroups, bracketPreds);
-  const awayId = resolveSlotTeam(match.awaySlot, qualifiedSlots, thirdGroups, bracketPreds);
+  const resolvedThirds = resolveAllThirdSlots(qualifiedSlots, thirdGroups);
+  const homeId = resolveSlotTeam(match.homeSlot, qualifiedSlots, resolvedThirds, bracketPreds);
+  const awayId = resolveSlotTeam(match.awaySlot, qualifiedSlots, resolvedThirds, bracketPreds);
   return [homeId, awayId];
 }
 
@@ -109,15 +109,18 @@ export function validateAndCleanBracket(
   qualifiedSlots: Record<string, string | null>,
   thirdGroups: Record<string, string>,
 ): Record<string, string | null> {
-  // Process in bracket order: R32 → R16 → QF → SF → Final
   let current = { ...bracketPreds };
   const invalidIds: string[] = [];
+
+  // Pre-resolve thirds once for the whole validation pass
+  const resolvedThirds = resolveAllThirdSlots(qualifiedSlots, thirdGroups);
 
   for (const match of ALL_BRACKET_MATCHES) {
     const picked = current[match.id];
     if (!picked) continue;
 
-    const [homeId, awayId] = getValidTeamsForMatch(match.id, qualifiedSlots, thirdGroups, current);
+    const homeId = resolveSlotTeam(match.homeSlot, qualifiedSlots, resolvedThirds, current);
+    const awayId = resolveSlotTeam(match.awaySlot, qualifiedSlots, resolvedThirds, current);
     if (picked !== homeId && picked !== awayId) {
       invalidIds.push(match.id);
     }

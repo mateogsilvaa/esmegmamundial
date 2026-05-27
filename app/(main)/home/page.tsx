@@ -16,7 +16,7 @@ export default async function HomePage() {
   // Top 10 leaderboard
   const { data: leaders } = await supabase
     .from('leaderboard')
-    .select('user_id, total_points, rank, profiles(username, display_name, country, favorite_team)')
+    .select('user_id, total_points, rank, profiles(username, display_name, country, favorite_team_id)')
     .order('rank', { ascending: true })
     .limit(10);
 
@@ -101,7 +101,7 @@ export default async function HomePage() {
           <div className="card divide-y divide-zinc-100">
             {leaders.map((entry, i) => {
               const profile = Array.isArray(entry.profiles) ? entry.profiles[0] : entry.profiles;
-              const favTeam = profile?.favorite_team ? getTeamById(profile.favorite_team) : null;
+              const favTeam = profile?.favorite_team_id ? getTeamById(profile.favorite_team_id) : null;
               const isMe = entry.user_id === user?.id;
 
               return (
