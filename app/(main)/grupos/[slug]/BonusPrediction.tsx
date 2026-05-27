@@ -16,9 +16,13 @@ interface Props {
 /**
  * Bonus score prediction widget for a single match.
  *
- * - Editable only when match is scheduled (not live/finished) and not locked.
- * - Saves to POST /api/bonus.
- * - Shows points earned once match is finished.
+ * Puntuación:
+ *   - 1 pt si el resultado (V/E/D) es correcto
+ *   - 3 pts en total si el score exacto es correcto (NO acumulativo: no son 1+3)
+ *
+ * - Editable solo cuando el partido es 'scheduled' y no está bloqueado en DB.
+ * - Guarda via POST /api/bonus.
+ * - Muestra puntos ganados cuando el partido termina.
  */
 export function BonusPrediction({
   matchId, initialHome, initialAway, dbLocked, pointsEarned, matchStatus,
@@ -84,11 +88,17 @@ export function BonusPrediction({
           {matchStatus === 'finished' && pointsEarned !== null && (
             <span className={cn(
               'text-[11px] font-bold px-2 py-0.5 rounded-full',
-              pointsEarned > 0
-                ? 'bg-green-100 text-green-700'
-                : 'bg-zinc-100 text-zinc-500',
+              pointsEarned === 3
+                ? 'bg-green-100 text-green-700'   // score exacto
+                : pointsEarned === 1
+                  ? 'bg-blue-50 text-blue-700'    // resultado correcto
+                  : 'bg-zinc-100 text-zinc-500',  // sin puntos
             )}>
-              {pointsEarned > 0 ? `+${pointsEarned} pts` : '0 pts'}
+              {pointsEarned === 3
+                ? '+3 pts (exacto)'
+                : pointsEarned === 1
+                  ? '+1 pt (resultado)'
+                  : '0 pts'}
             </span>
           )}
         </div>

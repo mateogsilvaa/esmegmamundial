@@ -1,104 +1,93 @@
 'use client';
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback } from 'react';
 import { toast } from 'sonner';
 import { Lock, Save, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { buildQualifiedSlots, type GroupOrders, type ThirdsRanking } from '@/lib/groupPrediction';
-import { validateAndCleanBracket, clearDownstreamOnPickChange } from '@/lib/bracketIntegrity';
+import { clearDownstreamOnPickChange } from '@/lib/bracketIntegrity';
 import { GroupOrderTab } from './GroupOrderTab';
-import { ThirdsTab } from './ThirdsTab';
 import { BracketTab } from './BracketTab';
+import type { GroupOrders } from '@/lib/groupPrediction';
+import type { OfficialKnockoutMatch } from '@/lib/types';
+
+// ─── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
-  userId: string;
-  locked: boolean;
+  userId:              string;
+  groupsLocked:        boolean;
   initialGroupOrders:  GroupOrders;
-  initialThirdsRanking: ThirdsRanking;
+  // Bracket
+  bracketStatus:       'not_open' | 'open' | 'locked';
+  bracketOpenAt:       string | null;
+  bracketLockAt:       string | null;
+  knockoutMatches:     OfficialKnockoutMatch[];
   initialBracketPreds: Record<string, string | null>;
 }
 
-type Tab = 'grupos' | 'terceros' | 'bracket';
+type Tab = 'grupos' | 'bracket';
 
 const TAB_LABELS: Record<Tab, string> = {
-  grupos:   'Grupos',
-  terceros: 'Terceros',
-  bracket:  'Bracket',
+  grupos:  'Grupos',
+  bracket: 'Bracket',
 };
 
+// ─── Component ────────────────────────────────────────────────────────────────
+
 export function PrediccionClient({
-  userId,
-  locked,
+  groupsLocked,
   initialGroupOrders,
-  initialThirdsRanking,
+  bracketStatus,
+  bracketOpenAt,
+  bracketLockAt,
+  knockoutMatches,
   initialBracketPreds,
 }: Props) {
-  const [tab,           setTab]          = useState<Tab>('grupos');
-  const [groupOrders,   setGroupOrders]  = useState<GroupOrders>(initialGroupOrders);
-  const [thirdsRanking, setThirdsRanking] = useState<ThirdsRanking>(initialThirdsRanking);
-  const [bracketPreds,  setBracketPreds] = useState(initialBracketPreds);
-  const [saving,        setSaving]       = useState(false);
-  const [dirty,         setDirty]        = useState(false);
+  const [tab,          setTab]         = useState<Tab>('grupos');
+  const [groupOrders,  setGroupOrders] = useState<GroupOrders>(initialGroupOrders);
+  const [bracketPreds, setBracketPreds] = useState(initialBracketPreds);
+  const [saving,       setSaving]      = useState(false);
+  const [dirty,        setDirty]       = useState(false);
 
-  // Derived: qualified slots + thirdGroups from user's group/thirds predictions
-  const { slots: qualifiedSlots, thirdGroups } = useMemo(
-    () => buildQualifiedSlots(groupOrders, thirdsRanking),
-    [groupOrders, thirdsRanking],
-  );
+  const bracketLocked = bracketStatus === 'locked';
 
-  // ── Handlers ──────────────────────────────────────────────────────────────
+  // ── Group handler ──────────────────────────────────────────────────────────
 
   const handleGroupChange = useCallback((groupId: string, ranking: (string | null)[]) => {
-    setGroupOrders(prev => {
-      const updated = { ...prev, [groupId]: ranking };
-      // Recompute slots and clean bracket if qualified teams changed
-      const { slots: newSlots, thirdGroups: newThirdGroups } = buildQualifiedSlots(updated, thirdsRanking);
-      setBracketPreds(b => validateAndCleanBracket(b, newSlots, newThirdGroups));
-      return updated;
-    });
-    setDirty(true);
-  }, [thirdsRanking]);
-
-  const handleThirdsChange = useCallback((ranking: ThirdsRanking) => {
-    setThirdsRanking(ranking);
-    // Recompute with new thirds ranking
-    const { slots: newSlots, thirdGroups: newThirdGroups } = buildQualifiedSlots(groupOrders, ranking);
-    setBracketPreds(b => validateAndCleanBracket(b, newSlots, newThirdGroups));
-    setDirty(true);
-  }, [groupOrders]);
-
-  const handleBracketPick = useCallback((slot: string, teamId: string | null) => {
-    setBracketPreds(prev => {
-      const cleared = clearDownstreamOnPickChange(slot, teamId, prev);
-      return { ...cleared, [slot]: teamId };
-    });
+    setGroupOrders(prev => ({ ...prev, [groupId]: ranking }));
     setDirty(true);
   }, []);
 
   const handleResetGroups = () => {
-    if (!confirm('¿Borrar todas las predicciones de grupo? El bracket también se limpiará.')) return;
+    if (!confirm('¿Borrar todas las predicciones de grupo?')) return;
     setGroupOrders({});
-    setThirdsRanking([]);
-    setBracketPreds({});
     setDirty(true);
-    toast.info('Predicciones borradas. Guarda para confirmar.');
+    toast.info('Grupos reiniciados. Guarda para confirmar.');
   };
+
+  // ── Bracket handler ────────────────────────────────────────────────────────
+
+  const handleBracketPick = useCallback((matchId: string, teamId: string | null) => {
+    setBracketPreds(prev => {
+      const cleared = clearDownstreamOnPickChange(matchId, teamId, prev);
+      return { ...cleared, [matchId]: teamId };
+    });
+    setDirty(true);
+  }, []);
 
   const handleResetBracket = () => {
     if (!confirm('¿Borrar todas las predicciones del bracket?')) return;
     setBracketPreds({});
     setDirty(true);
-    toast.info('Bracket borrado. Guarda para confirmar.');
+    toast.info('Bracket reiniciado. Guarda para confirmar.');
   };
 
-  // ── Save ──────────────────────────────────────────────────────────────────
+  // ── Save ───────────────────────────────────────────────────────────────────
 
   const handleSave = async () => {
-    if (locked) return;
+    if (groupsLocked && bracketLocked) return;
     setSaving(true);
 
     try {
-      // Serialise groupOrders → array of { groupId, teamOrder }
       const groupOrdersPayload = Object.entries(groupOrders).map(([groupId, order]) => ({
         groupId,
         teamOrder: order.filter(Boolean) as string[],
@@ -108,15 +97,14 @@ export function PrediccionClient({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          groupOrders:    groupOrdersPayload,
-          thirdsRanking,
+          groupOrders:  groupOrdersPayload,
           bracketPreds,
         }),
       });
 
       if (!res.ok) {
-        const err = await res.json();
-        toast.error(err.error ?? 'Error al guardar');
+        const err = await res.json().catch(() => ({}));
+        toast.error((err as { error?: string }).error ?? 'Error al guardar');
       } else {
         toast.success('Predicciones guardadas ✓');
         setDirty(false);
@@ -126,14 +114,17 @@ export function PrediccionClient({
     }
   };
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
+
+  const everythingLocked = groupsLocked && bracketLocked;
 
   return (
     <div className="min-h-screen pb-safe">
-      {/* Sticky header with tabs */}
+      {/* Sticky header with tabs + save */}
       <div className="sticky top-14 md:top-16 z-30 bg-zinc-50/95 backdrop-blur-sm border-b border-zinc-200">
         <div className="max-w-5xl mx-auto px-4 sm:px-6">
           <div className="flex items-center justify-between h-12">
+            {/* Tabs */}
             <div className="flex items-center gap-1">
               {(Object.keys(TAB_LABELS) as Tab[]).map(t => (
                 <button
@@ -151,8 +142,9 @@ export function PrediccionClient({
               ))}
             </div>
 
+            {/* Save area */}
             <div className="flex items-center gap-2">
-              {locked ? (
+              {everythingLocked ? (
                 <span className="badge-locked">
                   <Lock size={11} />
                   Bloqueado
@@ -188,28 +180,20 @@ export function PrediccionClient({
           <GroupOrderTab
             groupOrders={groupOrders}
             onChange={handleGroupChange}
-            locked={locked}
-            onReset={locked ? undefined : handleResetGroups}
-          />
-        )}
-
-        {tab === 'terceros' && (
-          <ThirdsTab
-            groupOrders={groupOrders}
-            thirdsRanking={thirdsRanking}
-            onChange={handleThirdsChange}
-            locked={locked}
+            locked={groupsLocked}
+            onReset={groupsLocked ? undefined : handleResetGroups}
           />
         )}
 
         {tab === 'bracket' && (
           <BracketTab
-            qualifiedSlots={qualifiedSlots}
-            thirdGroups={thirdGroups}
+            bracketStatus={bracketStatus}
+            openAt={bracketOpenAt}
+            lockAt={bracketLockAt}
+            matches={knockoutMatches}
             bracketPreds={bracketPreds}
             onPick={handleBracketPick}
-            locked={locked}
-            onResetBracket={locked ? undefined : handleResetBracket}
+            onResetBracket={bracketLocked ? undefined : handleResetBracket}
           />
         )}
       </div>

@@ -14,8 +14,7 @@ export default async function RankingPage() {
     .from('leaderboard')
     .select(`
       user_id, total_points, rank, previous_rank,
-      group_qualifier, group_position, thirds_selected, thirds_order,
-      knockout_pts, bonus_score,
+      group_pts, bracket_pts, bonus_score,
       profiles(username, display_name, avatar_url, country, favorite_team_id, is_public)
     `)
     .order('rank', { ascending: true })
@@ -32,7 +31,9 @@ export default async function RankingPage() {
 
       {(!leaders || leaders.length === 0) ? (
         <div className="card p-12 text-center">
-          <p className="text-zinc-400 text-sm">El ranking estará disponible cuando empiecen los partidos</p>
+          <p className="text-zinc-400 text-sm">
+            El ranking estará disponible cuando empiecen los partidos
+          </p>
         </div>
       ) : (
         <div className="card divide-y divide-zinc-100">
@@ -115,7 +116,6 @@ export default async function RankingPage() {
               </div>
             );
 
-            // Wrap in Link only for public profiles
             return isPublic && username ? (
               <Link key={entry.user_id} href={`/u/${username}`} className="block">
                 {inner}

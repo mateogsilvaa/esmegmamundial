@@ -1,19 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
-import { scoreBonusPrediction, sumTotalScore } from '@/lib/scoring';
+import { scoreMatchBonus } from '@/lib/scoring';
 
 /**
- * Admin endpoint: recalculate bonus points after a match finishes.
- * POST /api/scores/recalculate  { matchId: 'A1' }
+ * Admin endpoint: recalcular puntos de bonus tras el fin de un partido.
  *
+ * POST /api/scores/recalculate  { matchId: 'A1' }
  * Header: Authorization: Bearer <SUPABASE_SERVICE_ROLE_KEY>
  *
- * Flow:
- *  1. Score match_bonus_predictions for the given match
- *  2. Recalculate leaderboard totals for affected users
- *  3. Update ranks
+ * Flujo:
+ *  1. Puntúa match_bonus_predictions para ese partido.
+ *  2. Marca cada predicción como locked=true y guarda points_earned.
+ *  3. Recalcula leaderboard.bonus_score + total_points para los usuarios afectados.
+ *  4. Recalcula ranks globales.
  */
 export async function POST(req: NextRequest) {
+  // Guard: solo service role
   const auth = req.headers.get('authorization');
   if (auth !== `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
@@ -24,38 +26,40 @@ export async function POST(req: NextRequest) {
 
   const supabase = createServiceClient();
 
-  // Get official match result
-  const { data: officialMatch } = await supabase
+  // ── 1. Resultado oficial ──────────────────────────────────────────────────
+
+  const { data: match } = await supabase
     .from('matches')
-    .select('home_score, away_score, status')
+    .select('id, home_score, away_score, status')
     .eq('id', matchId)
     .single();
 
-  if (!officialMatch || officialMatch.status !== 'finished') {
+  if (!match || match.status !== 'finished') {
     return NextResponse.json({ error: 'Match not finished' }, { status: 400 });
   }
 
-  // ── Score bonus predictions ──────────────────────────────────────────────
+  // ── 2. Puntuar bonus predictions ──────────────────────────────────────────
 
   const { data: bonusPreds } = await supabase
     .from('match_bonus_predictions')
     .select('id, user_id, home_score, away_score')
-    .eq('match_id', matchId);
+    .eq('match_id', matchId)
+    .eq('locked', false);   // solo las no bloqueadas (evitar doble scoring)
 
   const bonusUpdates: { id: string; user_id: string; pts: number }[] = [];
 
   for (const pred of bonusPreds ?? []) {
-    const { pts } = scoreBonusPrediction(
+    const { pts } = scoreMatchBonus(
       matchId,
       pred.home_score,
       pred.away_score,
-      officialMatch.home_score,
-      officialMatch.away_score,
+      match.home_score,
+      match.away_score,
     );
     bonusUpdates.push({ id: pred.id, user_id: pred.user_id, pts });
   }
 
-  // Update individual bonus prediction points
+  // Guardar points_earned + locked en cada predicción bonus
   for (const u of bonusUpdates) {
     await supabase
       .from('match_bonus_predictions')
@@ -63,11 +67,12 @@ export async function POST(req: NextRequest) {
       .eq('id', u.id);
   }
 
-  // ── Recalculate leaderboard for affected users ────────────────────────────
+  // ── 3. Recalcular leaderboard para los usuarios afectados ─────────────────
 
-  const userIds = Array.from(new Set(bonusUpdates.map(u => u.user_id)));
+  const affectedUserIds = Array.from(new Set(bonusUpdates.map(u => u.user_id)));
 
-  for (const userId of userIds) {
+  for (const userId of affectedUserIds) {
+    // Sumar todos los puntos bonus del usuario (incluyendo partidos anteriores)
     const { data: allBonus } = await supabase
       .from('match_bonus_predictions')
       .select('points_earned')
@@ -75,37 +80,31 @@ export async function POST(req: NextRequest) {
 
     const bonusScore = allBonus?.reduce((s, p) => s + (p.points_earned ?? 0), 0) ?? 0;
 
-    // Get current leaderboard values to preserve other categories
+    // Recuperar otros puntos del leaderboard para preservarlos
     const { data: current } = await supabase
       .from('leaderboard')
-      .select('group_qualifier, group_position, thirds_selected, thirds_order, knockout_pts')
+      .select('group_pts, bracket_pts')
       .eq('user_id', userId)
       .maybeSingle();
 
-    const total = sumTotalScore({
-      groupResults:    [],
-      thirdsResult:    null,
-      knockoutResults: [],
-      bonusResults:    [],
-    }).total
-      + (current?.group_qualifier  ?? 0)
-      + (current?.group_position   ?? 0)
-      + (current?.thirds_selected  ?? 0)
-      + (current?.thirds_order     ?? 0)
-      + (current?.knockout_pts     ?? 0)
-      + bonusScore;
+    const groupPts   = current?.group_pts   ?? 0;
+    const bracketPts = current?.bracket_pts ?? 0;
+    const total      = groupPts + bracketPts + bonusScore;
 
     await supabase
       .from('leaderboard')
-      .upsert({
-        user_id:      userId,
-        bonus_score:  bonusScore,
-        total_points: total,
-        last_updated: new Date().toISOString(),
-      }, { onConflict: 'user_id' });
+      .upsert(
+        {
+          user_id:      userId,
+          bonus_score:  bonusScore,
+          total_points: total,
+          last_updated: new Date().toISOString(),
+        },
+        { onConflict: 'user_id' },
+      );
   }
 
-  // ── Recalculate ranks ─────────────────────────────────────────────────────
+  // ── 4. Recalcular ranks globales ──────────────────────────────────────────
 
   const { data: allLeaders } = await supabase
     .from('leaderboard')
@@ -121,5 +120,9 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ success: true, bonusUpdated: bonusUpdates.length });
+  return NextResponse.json({
+    success:      true,
+    bonusUpdated: bonusUpdates.length,
+    matchId,
+  });
 }

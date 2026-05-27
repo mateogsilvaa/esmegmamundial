@@ -1,61 +1,44 @@
 /**
- * Sistema de puntuación oficial — Mundial 2026
+ * Sistema de puntuación — Mundial 2026
  *
- * Arquitectura nueva:
- *   1. scoreGroupOrder      — usuario predice 1º-4º de cada grupo
- *   2. scoreThirds          — usuario predice los 8 mejores terceros EN ORDEN
- *   3. scoreKnockoutPick    — picks de bracket (ganador de cada cruce)
- *   4. scoreBonusPrediction — score exacto de cualquier partido (+2 pts, separado)
+ * Tres capas independientes y puras:
+ *
+ *   1. scoreGroupPrediction    — orden de grupo (2 pts/posición, 10 si grupo perfecto)
+ *   2. scoreBracketPrediction  — ganador de cruce (5 pts planos)
+ *   3. scoreMatchBonus         — predicción de score (1 resultado / 3 exacto, no acumulativo)
+ *
+ * Todas las funciones son puras: sin efectos secundarios, sin I/O.
  */
 
 import { SCORE_RULES } from './types';
 
 // ─── Tipos de resultado ───────────────────────────────────────────────────────
 
-export interface GroupScoreResult {
-  groupId: string;
-  qualifierPts: number;   // SCORE_RULES.GROUP_QUALIFIER por cada equipo en top-2 correcto
-  positionPts: number;    // SCORE_RULES.GROUP_POS_EXACT por cada posición exacta
-  total: number;
-  details: {
-    teamId: string;
-    qualifier: boolean;   // está en el top-2 oficial
-    exactPosition: boolean; // además en la posición exacta (1º o 2º)
-  }[];
+export interface GroupPredictionScore {
+  groupId:      string;
+  correctCount: number;   // 0–4 posiciones correctas
+  isPerfect:    boolean;  // true si las 4 son correctas
+  pts:          number;   // correctCount * 2; si isPerfect → 10
 }
 
-export interface ThirdsScoreResult {
-  selectedPts: number;    // SCORE_RULES.THIRDS_SELECTED por cada tercero correcto seleccionado
-  orderPts: number;       // SCORE_RULES.THIRDS_ORDER por cada posición exacta
-  total: number;
-  details: {
-    rank: number;         // 1-8 (posición en el ranking del usuario)
-    teamId: string;
-    selected: boolean;    // el equipo realmente avanzó como tercero
-    exactRank: boolean;   // además en la posición exacta
-  }[];
-}
-
-export interface KnockoutScoreResult {
+export interface BracketPredictionScore {
   matchId: string;
-  pts: number;
-  isChampionBonus: boolean;
+  correct: boolean;
+  pts:     number;   // BRACKET_WINNER (5) si correcto, 0 si no
 }
 
-export interface BonusScoreResult {
-  matchId: string;
-  pts: number;  // 0 o SCORE_RULES.BONUS_EXACT_SCORE
-  isExact: boolean;
+export interface MatchBonusScore {
+  matchId:         string;
+  isResultCorrect: boolean;
+  isExact:         boolean;
+  pts:             number;  // 0 | BONUS_RESULT (1) | BONUS_EXACT (3)
 }
 
-export interface TotalScore {
-  groupQualifier: number;
-  groupPosition: number;
-  thirdsSelected: number;
-  thirdsOrder: number;
-  knockoutPts: number;
-  bonusScore: number;
-  total: number;
+export interface TournamentScore {
+  groupPts:   number;
+  bracketPts: number;
+  bonusPts:   number;
+  total:      number;
 }
 
 // ─── Funciones de puntuación ──────────────────────────────────────────────────
@@ -63,203 +46,141 @@ export interface TotalScore {
 /**
  * Puntúa la predicción de orden de un grupo.
  *
- * @param groupId         ID del grupo ('A'–'L')
- * @param predicted       Array [1º,2º,3º,4º] teamIds predichos por el usuario
- * @param officialTop2    Los 2 equipos reales que clasifican (en su orden oficial: [1º,2º])
+ * Regla:
+ *   - 2 pts por cada posición correcta (de las 4).
+ *   - Si las 4 son correctas → 10 pts totales (no 8).
+ *     El bonus extra de 2 representa el "grupo perfecto".
+ *
+ * Ejemplos:
+ *   0 correctas → 0 pts
+ *   1 correcta  → 2 pts
+ *   2 correctas → 4 pts
+ *   3 correctas → 6 pts
+ *   4 correctas → 10 pts  ← bonus de grupo perfecto
+ *
+ * @param groupId   Grupo ('A'–'L')
+ * @param predicted Orden predicho por el usuario [1º, 2º, 3º, 4º] (puede tener nulls)
+ * @param official  Orden final oficial [1º, 2º, 3º, 4º] (null si aún no disponible)
  */
-export function scoreGroupOrder(
+export function scoreGroupPrediction(
   groupId: string,
   predicted: (string | null)[],
-  officialTop2: [string, string] | null,
-): GroupScoreResult {
-  if (!officialTop2) {
-    return { groupId, qualifierPts: 0, positionPts: 0, total: 0, details: [] };
+  official: string[] | null,
+): GroupPredictionScore {
+  if (!official || official.length < 4) {
+    return { groupId, correctCount: 0, isPerfect: false, pts: 0 };
   }
 
-  const [off1, off2] = officialTop2;
-  let qualifierPts = 0;
-  let positionPts  = 0;
-
-  const details: GroupScoreResult['details'] = [];
-
-  // Evaluar las dos primeras posiciones predichas
-  for (let i = 0; i < 2; i++) {
-    const predTeam = predicted[i] ?? null;
-    if (!predTeam) {
-      details.push({ teamId: '', qualifier: false, exactPosition: false });
-      continue;
+  let correctCount = 0;
+  for (let i = 0; i < 4; i++) {
+    if (predicted[i] && predicted[i] === official[i]) {
+      correctCount++;
     }
-
-    const qualifier = predTeam === off1 || predTeam === off2;
-    const exactPosition =
-      (i === 0 && predTeam === off1) ||
-      (i === 1 && predTeam === off2);
-
-    if (qualifier) qualifierPts += SCORE_RULES.GROUP_QUALIFIER;
-    if (exactPosition) positionPts += SCORE_RULES.GROUP_POS_EXACT;
-
-    details.push({ teamId: predTeam, qualifier, exactPosition });
   }
 
-  return {
-    groupId,
-    qualifierPts,
-    positionPts,
-    total: qualifierPts + positionPts,
-    details,
-  };
+  const isPerfect = correctCount === 4;
+  const pts = isPerfect
+    ? SCORE_RULES.GROUP_POSITION * 4 + SCORE_RULES.GROUP_PERFECT_BONUS  // 8 + 2 = 10
+    : correctCount * SCORE_RULES.GROUP_POSITION;
+
+  return { groupId, correctCount, isPerfect, pts };
 }
 
 /**
- * Puntúa el ranking de 8 mejores terceros.
+ * Puntúa todas las predicciones de grupo de un usuario en un pase.
  *
- * @param predictedRanking  Array de 8 teamIds en orden del usuario (mejor→peor)
- * @param officialAdvancing Set de los 8 teamIds que realmente avanzaron como terceros
- * @param officialRanking   Array de los mismos 8 en su orden oficial (mejor→peor)
- *                          null si todavía no se conoce el orden oficial
+ * @param predicted Mapa groupId → [1º, 2º, 3º, 4º] predichos
+ * @param official  Mapa groupId → [1º, 2º, 3º, 4º] oficiales (null para grupos no terminados)
  */
-export function scoreThirds(
-  predictedRanking: string[],
-  officialAdvancing: Set<string> | null,
-  officialRanking: string[] | null,
-): ThirdsScoreResult {
-  if (!officialAdvancing) {
-    return { selectedPts: 0, orderPts: 0, total: 0, details: [] };
-  }
-
-  let selectedPts = 0;
-  let orderPts    = 0;
-
-  const details: ThirdsScoreResult['details'] = predictedRanking.slice(0, 8).map((teamId, idx) => {
-    const rank     = idx + 1;
-    const selected = officialAdvancing.has(teamId);
-    const exactRank = selected && officialRanking !== null && officialRanking[idx] === teamId;
-
-    if (selected) selectedPts += SCORE_RULES.THIRDS_SELECTED;
-    if (exactRank) orderPts   += SCORE_RULES.THIRDS_ORDER;
-
-    return { rank, teamId, selected, exactRank };
-  });
-
-  return { selectedPts, orderPts, total: selectedPts + orderPts, details };
+export function scoreAllGroupPredictions(
+  predicted: Record<string, (string | null)[]>,
+  official:  Record<string, string[] | null>,
+): { results: GroupPredictionScore[]; totalGroupPts: number } {
+  const results = Object.keys(predicted).map(groupId =>
+    scoreGroupPrediction(groupId, predicted[groupId], official[groupId] ?? null),
+  );
+  const totalGroupPts = results.reduce((s, r) => s + r.pts, 0);
+  return { results, totalGroupPts };
 }
 
 /**
- * Puntúa el pick de eliminatoria de un cruce.
+ * Puntúa el pick de ganador de un cruce eliminatorio.
  *
- * @param matchId          ID del cruce ('P73'–'P104')
- * @param matchRound       Ronda del cruce
+ * Regla: 5 pts planos si el ganador predicho coincide con el oficial.
+ * No hay distinción por ronda (mismos puntos en R32, R16, QF, SF, Final).
+ *
+ * @param matchId          ID del cruce (P73–P104)
  * @param predictedWinner  teamId predicho como ganador (null = no predicho)
- * @param officialWinner   teamId real ganador (null = aún no jugado)
- * @param isChampionMatch  true si es la final (P104) — suma CHAMPION bonus
+ * @param officialWinner   teamId del ganador oficial (null = aún no jugado)
  */
-export function scoreKnockoutPick(
+export function scoreBracketPrediction(
   matchId: string,
-  matchRound: string,
   predictedWinner: string | null,
   officialWinner: string | null,
-  isChampionMatch = false,
-): KnockoutScoreResult {
-  if (!officialWinner || !predictedWinner) {
-    return { matchId, pts: 0, isChampionBonus: false };
+): BracketPredictionScore {
+  if (!predictedWinner || !officialWinner) {
+    return { matchId, correct: false, pts: 0 };
   }
-
-  if (predictedWinner !== officialWinner) {
-    return { matchId, pts: 0, isChampionBonus: false };
-  }
-
-  const roundPts: Record<string, number> = {
-    round_of_32:  SCORE_RULES.KNOCKOUT_R32,
-    round_of_16:  SCORE_RULES.KNOCKOUT_R16,
-    quarterfinal: SCORE_RULES.KNOCKOUT_QF,
-    semifinal:    SCORE_RULES.KNOCKOUT_SF,
-    final:        SCORE_RULES.KNOCKOUT_FINAL,
-  };
-
-  let pts = roundPts[matchRound] ?? 0;
-  if (isChampionMatch) pts += SCORE_RULES.CHAMPION;
-
-  return { matchId, pts, isChampionBonus: isChampionMatch };
+  const correct = predictedWinner === officialWinner;
+  return { matchId, correct, pts: correct ? SCORE_RULES.BRACKET_WINNER : 0 };
 }
 
 /**
- * Puntúa una predicción de score exacto (sistema bonus, independiente).
+ * Puntúa una predicción de score de partido (sistema bonus).
  *
- * @param matchId    ID del partido
- * @param predHome   Goles predichos local
- * @param predAway   Goles predichos visitante
- * @param offHome    Goles reales local (null = no terminado)
- * @param offAway    Goles reales visitante (null = no terminado)
+ * Reglas (NO acumulativas):
+ *   - 0 pts si el resultado (V/E/D) no es correcto.
+ *   - 1 pt si el resultado es correcto pero el score exacto no.
+ *   - 3 pts en total si el score exacto es correcto.
+ *     (No son 1+3=4. El score exacto implica automáticamente resultado correcto,
+ *      y se puntúa como 3 en total, no como 4.)
+ *
+ * @param matchId  ID del partido
+ * @param predHome Goles locales predichos
+ * @param predAway Goles visitantes predichos
+ * @param offHome  Goles locales oficiales (null si no terminado)
+ * @param offAway  Goles visitantes oficiales (null si no terminado)
  */
-export function scoreBonusPrediction(
+export function scoreMatchBonus(
   matchId: string,
   predHome: number,
   predAway: number,
   offHome: number | null,
   offAway: number | null,
-): BonusScoreResult {
+): MatchBonusScore {
   if (offHome === null || offAway === null) {
-    return { matchId, pts: 0, isExact: false };
+    return { matchId, isResultCorrect: false, isExact: false, pts: 0 };
   }
 
   const isExact = predHome === offHome && predAway === offAway;
-  return {
-    matchId,
-    pts: isExact ? SCORE_RULES.BONUS_EXACT_SCORE : 0,
-    isExact,
-  };
-}
 
-/**
- * Suma todos los parciales en un TotalScore.
- */
-export function sumTotalScore(parts: {
-  groupResults:  GroupScoreResult[];
-  thirdsResult:  ThirdsScoreResult | null;
-  knockoutResults: KnockoutScoreResult[];
-  bonusResults:  BonusScoreResult[];
-}): TotalScore {
-  let groupQualifier = 0;
-  let groupPosition  = 0;
+  // Math.sign: -1 (away wins), 0 (draw), 1 (home wins)
+  const predResult = Math.sign(predHome - predAway);
+  const offResult  = Math.sign(offHome  - offAway);
+  const isResultCorrect = predResult === offResult;
 
-  for (const g of parts.groupResults) {
-    groupQualifier += g.qualifierPts;
-    groupPosition  += g.positionPts;
+  let pts = 0;
+  if (isExact) {
+    pts = SCORE_RULES.BONUS_EXACT;     // 3 pts total
+  } else if (isResultCorrect) {
+    pts = SCORE_RULES.BONUS_RESULT;    // 1 pt
   }
 
-  const thirdsSelected = parts.thirdsResult?.selectedPts ?? 0;
-  const thirdsOrder    = parts.thirdsResult?.orderPts    ?? 0;
-
-  const knockoutPts = parts.knockoutResults.reduce((s, k) => s + k.pts, 0);
-  const bonusScore  = parts.bonusResults.reduce((s, b) => s + b.pts, 0);
-
-  const total =
-    groupQualifier + groupPosition +
-    thirdsSelected + thirdsOrder +
-    knockoutPts + bonusScore;
-
-  return {
-    groupQualifier,
-    groupPosition,
-    thirdsSelected,
-    thirdsOrder,
-    knockoutPts,
-    bonusScore,
-    total,
-  };
+  return { matchId, isResultCorrect, isExact, pts };
 }
 
 /**
- * Construye un TotalScore vacío (cero en todo).
+ * Combina los tres pilares de puntuación en un total.
  */
-export function emptyTotalScore(): TotalScore {
+export function scoreTournament(
+  groupPts:   number,
+  bracketPts: number,
+  bonusPts:   number,
+): TournamentScore {
   return {
-    groupQualifier: 0,
-    groupPosition:  0,
-    thirdsSelected: 0,
-    thirdsOrder:    0,
-    knockoutPts:    0,
-    bonusScore:     0,
-    total:          0,
+    groupPts,
+    bracketPts,
+    bonusPts,
+    total: groupPts + bracketPts + bonusPts,
   };
 }

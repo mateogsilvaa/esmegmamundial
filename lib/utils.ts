@@ -5,7 +5,7 @@ import { es } from 'date-fns/locale';
 import { PREDICTION_LOCK_DATE } from './types';
 import type { Team } from './types';
 import { GROUP_MATCHES } from './data/matches';
-import { getTeamsByGroup, getTeamById } from './data/teams';
+import { getTeamsByGroup } from './data/teams';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -95,7 +95,6 @@ function sortGroup(
 ): PredStanding[] {
   if (standings.length <= 1 || depth > 5) return standings;
 
-  // Separate into tied groups by points
   const groups: PredStanding[][] = [];
   let i = 0;
   while (i < standings.length) {
@@ -111,17 +110,13 @@ function sortGroup(
     const ids = group.map(s => s.teamId);
     const h2h = headToHead(ids, allResults);
 
-    // Check if H2H resolves
     const sorted = [...group].sort((a, b) => {
       const ah = h2h[a.teamId], bh = h2h[b.teamId];
       if (bh.pts !== ah.pts) return bh.pts - ah.pts;
       if (bh.gd  !== ah.gd)  return bh.gd  - ah.gd;
       if (bh.gf  !== ah.gf)  return bh.gf  - ah.gf;
-      // Overall GD
       if (b.gd !== a.gd) return b.gd - a.gd;
-      // Overall GF
       if (b.gf !== a.gf) return b.gf - a.gf;
-      // FIFA rank (lower = better)
       const aTeam = teams.find(t => t.id === a.teamId);
       const bTeam = teams.find(t => t.id === b.teamId);
       const aRank = aTeam?.fifaRank ?? 999;
@@ -133,7 +128,49 @@ function sortGroup(
   });
 }
 
-// ─── Compute group standings from user predictions ─────────────────────────
+// ─── Standings from official match results ────────────────────────────────────
+
+export function calculateGroupStandings(
+  teams: Team[],
+  matches: Array<{
+    homeTeam: { id: string } | null;
+    awayTeam: { id: string } | null;
+    homeScore: number | null;
+    awayScore: number | null;
+    status: string;
+  }>,
+): PredStanding[] {
+  const stats: Record<string, PredStanding> = {};
+  teams.forEach(t => {
+    stats[t.id] = { teamId: t.id, pts: 0, gf: 0, ga: 0, gd: 0, won: 0, drawn: 0, lost: 0, played: 0 };
+  });
+
+  const results: MatchResult[] = [];
+
+  for (const match of matches) {
+    if (match.status !== 'finished' || match.homeScore === null || match.awayScore === null) continue;
+    const h = match.homeTeam?.id;
+    const a = match.awayTeam?.id;
+    if (!h || !a || !stats[h] || !stats[a]) continue;
+
+    const hg = match.homeScore, ag = match.awayScore;
+    stats[h].played++; stats[a].played++;
+    stats[h].gf += hg; stats[h].ga += ag;
+    stats[a].gf += ag; stats[a].ga += hg;
+
+    if (hg > ag) { stats[h].pts += 3; stats[h].won++; stats[a].lost++; }
+    else if (ag > hg) { stats[a].pts += 3; stats[a].won++; stats[h].lost++; }
+    else { stats[h].pts++; stats[h].drawn++; stats[a].pts++; stats[a].drawn++; }
+
+    results.push({ h, a, hg, ag });
+  }
+
+  const list = Object.values(stats).map(s => ({ ...s, gd: s.gf - s.ga }));
+  list.sort((a, b) => b.pts - a.pts || b.gd - a.gd || b.gf - a.gf);
+  return sortGroup(list, results, teams);
+}
+
+// ─── Standings from user score predictions (grupos page preview) ──────────────
 
 export function computeGroupStandings(
   groupId: string,
@@ -173,177 +210,6 @@ export function computeGroupStandings(
       stats[h].pts += 1; stats[h].drawn++;
       stats[a].pts += 1; stats[a].drawn++;
     }
-
-    results.push({ h, a, hg, ag });
-  }
-
-  const list = Object.values(stats).map(s => ({ ...s, gd: s.gf - s.ga }));
-  // Initial sort by pts, then apply full tiebreaker
-  list.sort((a, b) => b.pts - a.pts || b.gd - a.gd || b.gf - a.gf);
-  return sortGroup(list, results, teams);
-}
-
-// ─── Compute all qualified slots from group predictions ─────────────────────
-//
-// Returns Record with keys like A1, A2, B1, B2, ..., L1, L2, T1–T8.
-// T1–T8 are the best 8 thirds sorted by pts > gd > gf > FIFA rank.
-// thirdGroups maps T1–T8 slot to the group it came from.
-
-export interface QualifiedSlots {
-  slots: Record<string, string | null>;
-  // Maps T1-T8 slot key to the source group id
-  thirdGroups: Record<string, string>;
-}
-
-export function computeQualifiedSlots(
-  predictions: Record<string, { homeScore: number; awayScore: number }>,
-): Record<string, string | null> {
-  return computeQualifiedSlotsWithGroups(predictions).slots;
-}
-
-export function computeQualifiedSlotsWithGroups(
-  predictions: Record<string, { homeScore: number; awayScore: number }>,
-): QualifiedSlots {
-  const slots: Record<string, string | null> = {};
-  const thirdGroups: Record<string, string> = {};
-  const thirds: { teamId: string; groupId: string; pts: number; gd: number; gf: number; fifaRank: number }[] = [];
-
-  for (const gId of ['A','B','C','D','E','F','G','H','I','J','K','L']) {
-    const standings = computeGroupStandings(gId, predictions);
-    slots[`${gId}1`] = standings[0]?.teamId ?? null;
-    slots[`${gId}2`] = standings[1]?.teamId ?? null;
-    if (standings[2]) {
-      const t = getTeamById(standings[2].teamId);
-      thirds.push({
-        teamId: standings[2].teamId,
-        groupId: gId,
-        pts: standings[2].pts,
-        gd: standings[2].gd,
-        gf: standings[2].gf,
-        fifaRank: t?.fifaRank ?? 999,
-      });
-    }
-  }
-
-  // Best 8 thirds: pts > gd > gf > FIFA rank
-  thirds.sort((a, b) =>
-    b.pts - a.pts ||
-    b.gd  - a.gd  ||
-    b.gf  - a.gf  ||
-    a.fifaRank - b.fifaRank,
-  );
-
-  thirds.slice(0, 8).forEach((t, i) => {
-    slots[`T${i + 1}`] = t.teamId;
-    thirdGroups[`T${i + 1}`] = t.groupId;
-  });
-
-  return { slots, thirdGroups };
-}
-
-/**
- * Resolve a single T_XYZ slot — legacy helper for bracketIntegrity.
- * NOTE: Does NOT track used thirds — use resolveAllThirdSlots() for the bracket UI.
- */
-export function resolveThirdSlot(
-  allowedGroups: string[],
-  slots: Record<string, string | null>,
-  thirdGroups: Record<string, string>,
-): string | null {
-  for (let i = 1; i <= 8; i++) {
-    const tKey = `T${i}`;
-    const sourceGroup = thirdGroups[tKey];
-    if (sourceGroup && allowedGroups.includes(sourceGroup)) {
-      return slots[tKey] ?? null;
-    }
-  }
-  return null;
-}
-
-// ─── Stateful third-slot resolution ──────────────────────────────────────────
-//
-// Each T_XYZ bracket slot must be filled by exactly ONE third.
-// Iterating T1-T8 in rank order, we assign each Ti to the first T_XYZ slot
-// whose allowed groups contain Ti's source group.
-// This ensures no third is duplicated across bracket slots.
-
-const THIRD_SLOT_DEFS: Array<{ key: string; groups: string[] }> = [
-  { key: 'T_ABCDF', groups: ['A','B','C','D','F'] },
-  { key: 'T_CDFGH', groups: ['C','D','F','G','H'] },
-  { key: 'T_CEFHI', groups: ['C','E','F','H','I'] },
-  { key: 'T_EHIJK', groups: ['E','H','I','J','K'] },
-  { key: 'T_BEFIJ', groups: ['B','E','F','I','J'] },
-  { key: 'T_AEHIJ', groups: ['A','E','H','I','J'] },
-  { key: 'T_EFGIJ', groups: ['E','F','G','I','J'] },
-  { key: 'T_DEIJL', groups: ['D','E','I','J','L'] },
-];
-
-/**
- * Resolves all 8 T_XYZ bracket slots in one pass, ensuring each third (Ti)
- * is used at most once. Returns a map { 'T_ABCDF': teamId, ... }.
- *
- * Algorithm: for each T_XYZ slot (in bracket order), find the highest-ranked
- * Ti (lowest i) whose source group is in the allowed list and hasn't been used.
- */
-export function resolveAllThirdSlots(
-  slots: Record<string, string | null>,
-  thirdGroups: Record<string, string>,
-): Record<string, string | null> {
-  const result: Record<string, string | null> = {};
-  const usedTKeys = new Set<string>();
-
-  for (const { key, groups } of THIRD_SLOT_DEFS) {
-    let found = false;
-    for (let i = 1; i <= 8; i++) {
-      const tKey = `T${i}`;
-      if (usedTKeys.has(tKey)) continue;
-      const sourceGroup = thirdGroups[tKey];
-      if (sourceGroup && groups.includes(sourceGroup)) {
-        result[key] = slots[tKey] ?? null;
-        usedTKeys.add(tKey);
-        found = true;
-        break;
-      }
-    }
-    if (!found) result[key] = null;
-  }
-
-  return result;
-}
-
-// ─── Real standings from official match results ────────────────────────────
-
-export function calculateGroupStandings(
-  teams: Team[],
-  matches: Array<{
-    homeTeam: { id: string } | null;
-    awayTeam: { id: string } | null;
-    homeScore: number | null;
-    awayScore: number | null;
-    status: string;
-  }>,
-): PredStanding[] {
-  const stats: Record<string, PredStanding> = {};
-  teams.forEach(t => {
-    stats[t.id] = { teamId: t.id, pts: 0, gf: 0, ga: 0, gd: 0, won: 0, drawn: 0, lost: 0, played: 0 };
-  });
-
-  const results: MatchResult[] = [];
-
-  for (const match of matches) {
-    if (match.status !== 'finished' || match.homeScore === null || match.awayScore === null) continue;
-    const h = match.homeTeam?.id;
-    const a = match.awayTeam?.id;
-    if (!h || !a || !stats[h] || !stats[a]) continue;
-
-    const hg = match.homeScore, ag = match.awayScore;
-    stats[h].played++; stats[a].played++;
-    stats[h].gf += hg; stats[h].ga += ag;
-    stats[a].gf += ag; stats[a].ga += hg;
-
-    if (hg > ag) { stats[h].pts += 3; stats[h].won++; stats[a].lost++; }
-    else if (ag > hg) { stats[a].pts += 3; stats[a].won++; stats[h].lost++; }
-    else { stats[h].pts++; stats[h].drawn++; stats[a].pts++; stats[a].drawn++; }
 
     results.push({ h, a, hg, ag });
   }

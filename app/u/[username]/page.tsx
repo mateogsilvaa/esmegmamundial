@@ -2,16 +2,15 @@ import { notFound } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { getTeamById, GROUP_IDS } from '@/lib/data/teams';
 import { Flag } from '@/components/ui/Flag';
-import { buildQualifiedSlots } from '@/lib/groupPrediction';
-import type { GroupOrders, ThirdsRanking } from '@/lib/groupPrediction';
+import type { GroupOrders } from '@/lib/groupPrediction';
 
 interface PageProps {
   params: { username: string };
 }
 
 export default async function PublicProfilePage({ params }: PageProps) {
-  const supabase  = createClient();
-  const username  = decodeURIComponent(params.username);
+  const supabase = createClient();
+  const username = decodeURIComponent(params.username);
 
   // Fetch profile
   const { data: profile } = await supabase
@@ -25,7 +24,7 @@ export default async function PublicProfilePage({ params }: PageProps) {
   // Fetch leaderboard entry
   const { data: lb } = await supabase
     .from('leaderboard')
-    .select('total_points, rank, group_qualifier, group_position, thirds_selected, thirds_order, knockout_pts, bonus_score')
+    .select('total_points, rank, group_pts, bracket_pts, bonus_score')
     .eq('user_id', profile.id)
     .maybeSingle();
 
@@ -33,13 +32,11 @@ export default async function PublicProfilePage({ params }: PageProps) {
 
   // Fetch predictions if public
   let groupOrders: GroupOrders = {};
-  let thirdsRanking: ThirdsRanking = [];
   let bracketPreds: Record<string, string | null> = {};
 
   if (profile.is_predictions_public) {
-    const [{ data: groupRows }, { data: thirdsRow }, { data: bracketRows }] = await Promise.all([
+    const [{ data: groupRows }, { data: bracketRows }] = await Promise.all([
       supabase.from('group_order_predictions').select('group_id, team_order').eq('user_id', profile.id),
-      supabase.from('third_place_predictions').select('ranking').eq('user_id', profile.id).maybeSingle(),
       supabase.from('bracket_predictions').select('slot, team_id').eq('user_id', profile.id),
     ]);
 
@@ -48,10 +45,13 @@ export default async function PublicProfilePage({ params }: PageProps) {
     }
     for (const row of groupRows ?? []) {
       const order = (row.team_order as string[]) ?? [];
-      groupOrders[row.group_id] = [order[0] ?? null, order[1] ?? null, order[2] ?? null, order[3] ?? null];
+      groupOrders[row.group_id] = [
+        order[0] ?? null,
+        order[1] ?? null,
+        order[2] ?? null,
+        order[3] ?? null,
+      ];
     }
-
-    thirdsRanking = (thirdsRow?.ranking as string[]) ?? [];
 
     for (const p of bracketRows ?? []) {
       bracketPreds[p.slot] = p.team_id ?? null;
@@ -65,7 +65,7 @@ export default async function PublicProfilePage({ params }: PageProps) {
 
   return (
     <div className="page max-w-2xl mx-auto space-y-6">
-      {/* Header */}
+      {/* ── Header ── */}
       <div className="card p-5 flex items-center gap-4">
         <div className="w-16 h-16 rounded-full bg-zinc-100 overflow-hidden flex items-center justify-center border border-zinc-200 flex-shrink-0">
           {profile.avatar_url ? (
@@ -100,20 +100,20 @@ export default async function PublicProfilePage({ params }: PageProps) {
         )}
       </div>
 
-      {/* Score breakdown */}
+      {/* ── Score breakdown ── */}
       {lb && (
         <div className="card p-4">
-          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-3">Desglose de puntos</p>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-3">
+            Desglose de puntos
+          </p>
+          <div className="grid grid-cols-3 gap-3">
             {[
-              { label: 'Clasificados',   value: lb.group_qualifier },
-              { label: 'Posición exacta',value: lb.group_position  },
-              { label: 'Terceros',       value: (lb.thirds_selected ?? 0) + (lb.thirds_order ?? 0) },
-              { label: 'Eliminatorias',  value: lb.knockout_pts    },
-              { label: 'Bonus score',    value: lb.bonus_score     },
+              { label: 'Grupos',       value: lb.group_pts   ?? 0 },
+              { label: 'Bracket',      value: lb.bracket_pts ?? 0 },
+              { label: 'Bonus score',  value: lb.bonus_score ?? 0 },
             ].map(({ label, value }) => (
               <div key={label} className="bg-zinc-50 rounded-lg p-2.5 text-center">
-                <p className="text-lg font-bold text-zinc-900 tabular">{value ?? 0}</p>
+                <p className="text-lg font-bold text-zinc-900 tabular">{value}</p>
                 <p className="text-xs text-zinc-500">{label}</p>
               </div>
             ))}
@@ -121,14 +121,14 @@ export default async function PublicProfilePage({ params }: PageProps) {
         </div>
       )}
 
-      {/* Predictions */}
+      {/* ── Predictions ── */}
       {!profile.is_predictions_public ? (
         <div className="card p-6 text-center">
           <p className="text-zinc-400 text-sm">Este usuario mantiene sus predicciones privadas</p>
         </div>
       ) : completedGroups.length === 0 ? (
         <div className="card p-6 text-center">
-          <p className="text-zinc-400 text-sm">Aún no ha hecho predicciones</p>
+          <p className="text-zinc-400 text-sm">Aún no ha hecho predicciones de grupo</p>
         </div>
       ) : (
         <>
@@ -139,11 +139,11 @@ export default async function PublicProfilePage({ params }: PageProps) {
               <p className="text-xs text-zinc-500">{completedGroups.length}/12 grupos completados</p>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-zinc-100">
-              {GROUP_IDS.map((gId, col) => {
+              {GROUP_IDS.map(gId => {
                 const ranking = groupOrders[gId] ?? [];
                 if (!ranking.some(Boolean)) return null;
                 return (
-                  <div key={gId} className={`px-4 py-3 ${col % 2 === 1 ? '' : 'border-r border-zinc-100 sm:border-r-0'}`}>
+                  <div key={gId} className="px-4 py-3">
                     <p className="text-xs font-bold text-zinc-500 mb-1.5">Grupo {gId}</p>
                     <div className="space-y-1">
                       {ranking.map((teamId, idx) => {
@@ -171,35 +171,14 @@ export default async function PublicProfilePage({ params }: PageProps) {
             </div>
           </div>
 
-          {/* Thirds ranking */}
-          {thirdsRanking.length > 0 && (
-            <div className="card overflow-hidden">
-              <div className="px-4 py-3 border-b border-zinc-100">
-                <p className="font-semibold text-zinc-900">Mejores terceros</p>
-              </div>
-              <div className="divide-y divide-zinc-50">
-                {thirdsRanking.slice(0, 8).map((teamId, idx) => {
-                  const team = getTeamById(teamId);
-                  if (!team) return null;
-                  return (
-                    <div key={idx} className="flex items-center gap-3 px-4 py-2.5">
-                      <span className="text-xs font-bold text-zinc-400 w-5 text-right flex-shrink-0">{idx + 1}</span>
-                      <Flag code={team.code} name={team.name} emoji={team.flag} size="sm" rounded />
-                      <span className="text-sm font-medium text-zinc-900 flex-1">{team.name}</span>
-                      <span className="text-xs text-zinc-400">Gr. {team.group}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
           {/* Bracket picks */}
           {Object.keys(bracketPreds).length > 0 && (
             <div className="card overflow-hidden">
               <div className="px-4 py-3 border-b border-zinc-100">
                 <p className="font-semibold text-zinc-900">Bracket</p>
-                <p className="text-xs text-zinc-500">{Object.values(bracketPreds).filter(Boolean).length} picks</p>
+                <p className="text-xs text-zinc-500">
+                  {Object.values(bracketPreds).filter(Boolean).length} picks · 5 pts por ganador
+                </p>
               </div>
               <div className="px-4 py-3 flex flex-wrap gap-2">
                 {Object.entries(bracketPreds)

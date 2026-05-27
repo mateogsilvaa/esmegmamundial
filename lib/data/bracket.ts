@@ -109,10 +109,12 @@ export const ROUND_LABELS: Record<string, string> = {
   final:        'Final',
 };
 
-export const ROUND_POINTS_KEY: Record<string, keyof typeof import('@/lib/types').SCORE_RULES> = {
-  round_of_32:  'KNOCKOUT_R32',
-  round_of_16:  'KNOCKOUT_R16',
-  quarterfinal: 'KNOCKOUT_QF',
-  semifinal:    'KNOCKOUT_SF',
-  final:        'KNOCKOUT_FINAL',
+// Todas las rondas del bracket valen lo mismo: BRACKET_WINNER (5 pts).
+// Este mapa se mantiene por compatibilidad pero ya no se usa en el scoring.
+export const ROUND_POINTS_KEY: Record<string, string> = {
+  round_of_32:  'BRACKET_WINNER',
+  round_of_16:  'BRACKET_WINNER',
+  quarterfinal: 'BRACKET_WINNER',
+  semifinal:    'BRACKET_WINNER',
+  final:        'BRACKET_WINNER',
 };

@@ -48,29 +48,34 @@ export interface BracketMatch {
   thirdsFrom?: string[];
 }
 
-// ─── Prediction types (NUEVA ARQUITECTURA) ───────────────────────────────────
+// ─── Official knockout match (from DB) ───────────────────────────────────────
+//
+// Used by the bracket tab when the official bracket is published.
+// Teams come from the real matches table, not derived from user predictions.
+
+export interface OfficialKnockoutMatch {
+  id: string;                // 'P73'…'P104'
+  round: Phase;
+  homeTeamId: string | null;
+  awayTeamId: string | null;
+  winnerId:   string | null; // official winner (null until match is played)
+  scheduledAt: string;
+}
+
+// ─── Prediction types ────────────────────────────────────────────────────────
 
 /**
- * Predicción principal: el usuario elige el orden final de cada grupo.
- * ranking[0] = 1º, ranking[1] = 2º, ranking[2] = 3º, ranking[3] = 4º
+ * El usuario elige el orden final de cada grupo (1º–4º).
+ * ranking[0] = 1º, ranking[3] = 4º
  */
 export interface GroupOrderPrediction {
-  groupId: string;        // 'A'–'L'
-  ranking: (string | null)[]; // 4 team IDs, nulls si aún no elegidos
+  groupId: string;
+  ranking: (string | null)[];
 }
 
 /**
- * Los 8 mejores terceros, ordenados por el usuario.
- * ranking[0] = mejor tercero, ranking[7] = 8º mejor
- * Solo puede contener teamIds que sean el 3er clasificado predicho de su grupo.
- */
-export interface ThirdsRankingPrediction {
-  ranking: string[];  // exactamente 8 team IDs en orden
-}
-
-/**
- * Predicción de ganador de cruce en eliminatorias.
- * slot = 'P73'…'P104'
+ * Pick de ganador de un cruce eliminatorio.
+ * slot = match ID ('P73'…'P104')
  */
 export interface BracketPrediction {
   slot: string;
@@ -78,9 +83,8 @@ export interface BracketPrediction {
 }
 
 /**
- * Predicción de score por partido (BONUS — separada de la predicción principal).
- * Se bloquea individualmente al inicio de CADA partido.
- * Vale 2 puntos si el score exacto es correcto.
+ * Predicción de score de un partido (bonus, separada de la predicción principal).
+ * Se bloquea al inicio de CADA partido.
  */
 export interface MatchBonusPrediction {
   matchId: string;
@@ -92,13 +96,10 @@ export interface MatchBonusPrediction {
 // ─── Leaderboard ──────────────────────────────────────────────────────────────
 
 export interface ScoreBreakdown {
-  groupQualifier: number;   // equipos correctos en top 2 de grupo
-  groupPosition: number;    // posición exacta correcta (1º vs 2º)
-  thirdsSelection: number;  // terceros correctamente seleccionados entre top 8
-  thirdsOrder: number;      // bonus por orden exacto de terceros
-  knockoutPts: number;      // picks de eliminatoria correctos
-  bonusScore: number;       // puntos de predicciones de score exacto
-  total: number;
+  groupPts:   number;   // puntos totales de fase de grupos
+  bracketPts: number;   // puntos totales de eliminatorias
+  bonusPts:   number;   // puntos bonus de scores exactos
+  total:      number;
 }
 
 export interface LeaderboardEntry {
@@ -107,7 +108,7 @@ export interface LeaderboardEntry {
   displayName: string | null;
   avatarUrl: string | null;
   country: string | null;
-  favoriteTeam: string | null;
+  favoriteTeamId: string | null;
   totalPoints: number;
   breakdown: ScoreBreakdown;
   rank: number;
@@ -144,8 +145,7 @@ export interface Standing {
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 
-// CORREGIDO: México vs Sudáfrica, el primer partido oficial
-// 11 junio 2026, 19:00 UTC (15:00 Ciudad de México, 21:00 CET)
+// Cierre de predicciones de grupo: primer partido del torneo
 export const PREDICTION_LOCK_DATE = new Date('2026-06-11T19:00:00Z');
 
 export const TOURNAMENT_START = new Date('2026-06-11T19:00:00Z');
@@ -153,22 +153,27 @@ export const TOURNAMENT_END   = new Date('2026-07-19T19:00:00Z');
 
 export const ACCESS_CODE = 'MUNDIAL67';
 
-// Sistema de puntuación oficial
+// ─── Sistema de puntuación ────────────────────────────────────────────────────
+//
+// FASE DE GRUPOS
+//   2 pts por posición correcta (1º–4º).
+//   Si las 4 posiciones son correctas → 10 pts totales (no 8):
+//   el bonus extra de 2 se aplica solo cuando el grupo es perfecto.
+//
+// BRACKET ELIMINATORIO
+//   5 pts planos por acertar el ganador de cualquier cruce.
+//
+// BONUS POR PARTIDO (score prediction)
+//   1 pt si el resultado (victoria/empate) es correcto.
+//   3 pts en total si el score exacto es correcto.
+//   NO acumulativo: score exacto da 3 (no 1+3=4).
+//
 export const SCORE_RULES = {
-  // Fase de grupos (predicción principal)
-  GROUP_QUALIFIER:   3,   // equipo correctamente en top 2 (cualquier posición)
-  GROUP_POS_EXACT:   2,   // bonus si además la posición exacta (1º o 2º) es correcta
-  THIRDS_SELECTED:   3,   // tercero correcto seleccionado entre los 8 mejores
-  THIRDS_ORDER:      1,   // bonus por orden exacto del tercero
+  GROUP_POSITION:     2,  // pts por posición correcta dentro del grupo
+  GROUP_PERFECT_BONUS: 2, // pts extra cuando las 4 posiciones son correctas (→ 10 total)
 
-  // Eliminatorias (picks de bracket)
-  KNOCKOUT_R32:      3,   // cruce de 32 correcto
-  KNOCKOUT_R16:      4,   // octavos correcto
-  KNOCKOUT_QF:       5,   // cuartos correcto
-  KNOCKOUT_SF:       7,   // semifinal correcto
-  KNOCKOUT_FINAL:    8,   // final correcto
-  CHAMPION:         10,   // campeón correcto
+  BRACKET_WINNER:     5,  // pts por acertar el ganador de un cruce
 
-  // Bonus de score (predicción separada por partido)
-  BONUS_EXACT_SCORE: 2,   // score exacto de cualquier partido
+  BONUS_RESULT:       1,  // pts si el resultado (V/E/D) es correcto
+  BONUS_EXACT:        3,  // pts totales si el score exacto es correcto (no acumulativo)
 } as const;
